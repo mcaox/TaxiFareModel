@@ -1,7 +1,7 @@
 import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
 
-from TaxiFareModel.utils import haversine_vectorized, haversine_distance
+from TaxiFareModel.utils import haversine_vectorized, haversine_distance, df_optimized
 
 
 class TimeFeaturesEncoder(BaseEstimator, TransformerMixin):
@@ -90,3 +90,17 @@ class DistanceToCenterTransformer(BaseEstimator, TransformerMixin):
             end_lon=self.end_lon
         )
         return X_[['distance_to_center']]
+
+
+class OptimizingTransformer(BaseEstimator, TransformerMixin):
+    """
+        Computes the haversine distance between two GPS points.
+        Returns a copy of the DataFrame X with only one column: 'distance'.
+    """
+
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X, y=None):
+        return df_optimized(pd.DataFrame(X))

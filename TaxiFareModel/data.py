@@ -1,5 +1,7 @@
 import pandas as pd
 
+from TaxiFareModel.utils import df_optimized
+
 AWS_BUCKET_PATH = "s3://wagon-public-datasets/taxi-fare-train.csv"
 
 
@@ -21,6 +23,7 @@ def clean_data(df, test=False):
     df = df[df["pickup_longitude"].between(left=-74.3, right=-72.9)]
     df = df[df["dropoff_latitude"].between(left=40, right=42)]
     df = df[df["dropoff_longitude"].between(left=-74, right=-72.9)]
+    df = df_optimized(df)
     return df
 
 def get_X_y(df,target,columns_to_drop):

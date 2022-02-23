@@ -21,7 +21,8 @@ from google.cloud import storage
 
 from TaxiFareModel.config import BUCKET_NAME, STORAGE_LOCATION, MLFLOW_URI, BUCKET_TRAIN_DATA_PATH
 from TaxiFareModel.data import get_data, clean_data, get_X_y
-from TaxiFareModel.encoders import TimeFeaturesEncoder, DistanceTransformer, DistanceToCenterTransformer
+from TaxiFareModel.encoders import TimeFeaturesEncoder, DistanceTransformer, DistanceToCenterTransformer, \
+    OptimizingTransformer
 from TaxiFareModel.utils import compute_rmse
 
 
@@ -45,7 +46,7 @@ class Trainer():
         time_pipe = Pipeline(
             [
                 ("timetrans",TimeFeaturesEncoder('pickup_datetime')),
-                ('ohe', OneHotEncoder(handle_unknown='ignore'))
+                ('ohe', OneHotEncoder(handle_unknown='ignore',sparse=False))
             ]
         )
         dist_pipe = Pipeline([
@@ -69,6 +70,7 @@ class Trainer():
 
         self.pipeline = Pipeline([
             ('preproc', preproc_pipe),
+            ('optmiser',OptimizingTransformer()),
             ('model', self.estimator)
         ])
 
