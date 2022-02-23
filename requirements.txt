@@ -27,3 +27,6 @@ scikit-learn
 # joblib
 # memoized-property
 # termcolor
+
+# specific TAXI
+dotenv

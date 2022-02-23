@@ -5,7 +5,6 @@ AWS_BUCKET_PATH = "s3://wagon-public-datasets/taxi-fare-train.csv"
 
 def get_data(src=AWS_BUCKET_PATH,nrows=10_000):
     '''returns a DataFrame with nrows from s3 bucket'''
-    print(src)
     df = pd.read_csv(src, nrows=nrows)
     return df
 
@@ -24,6 +23,10 @@ def clean_data(df, test=False):
     df = df[df["dropoff_longitude"].between(left=-74, right=-72.9)]
     return df
 
+def get_X_y(df,target,columns_to_drop):
+    y=df[target]
+    X=df.drop(columns=columns_to_drop)
+    return X,y
 
 if __name__ == '__main__':
     df = get_data()

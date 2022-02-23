@@ -1,4 +1,5 @@
 # imports
+import sys
 from pathlib import Path
 
 import joblib
@@ -14,11 +15,13 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from xgboost import XGBRFRegressor
 
-from TaxiFareModel.data import get_data, clean_data
+
+from google.cloud import storage
+
+from TaxiFareModel.data import get_data, clean_data, get_X_y
 from TaxiFareModel.encoders import TimeFeaturesEncoder, DistanceTransformer, DistanceToCenterTransformer
 from TaxiFareModel.utils import compute_rmse
-
-MLFLOW_URI = "https://mlflow.lewagon.co/"
+from config import MLFLOW_URI, BUCKET_NAME, BUCKET_TRAIN_DATA_PATH, STORAGE_LOCATION
 
 
 class Trainer():
@@ -80,10 +83,10 @@ class Trainer():
         rmse = compute_rmse(y_pred, y_test)
         return rmse
 
-    def save_model(self):
+    def save_model(self,name='model.joblib'):
         """ Save the trained model into a model.joblib file """
-
-        joblib.dump(self.pipeline, 'model.joblib')
+        joblib.dump(self.pipeline, name)
+        return name
 
     @property
     def mlflow_uri(self):
@@ -115,17 +118,24 @@ class Trainer():
     def mlflow_log_metric(self, key, value):
         self.mlflow_client.log_metric(self.mlflow_run.info.run_id, key, value)
 
+    def upload_model_to_gcp(self,name='model.joblib'):
+        client = storage.Client()
+
+        bucket = client.bucket(BUCKET_NAME)
+
+        blob = bucket.blob(STORAGE_LOCATION)
+
+        blob.upload_from_filename(name)
+
 
 TARGET = "fare_amount"
-def main(src = None,uri=MLFLOW_URI):
+def train_locally(src = None, uri=MLFLOW_URI):
     if src is None or not Path(src).exists():
         df = get_data()
     else:
         df = get_data(src=src)
     df = clean_data(df)
-
-    y=df[TARGET]
-    X=df.drop(columns=TARGET)
+    X,y = get_X_y(df,TARGET,[TARGET])
     X_train,X_test,y_train,y_test = train_test_split(X,y,test_size=0.2)
     scores = []
     for estimator,params in [
@@ -145,7 +155,34 @@ def main(src = None,uri=MLFLOW_URI):
             trainer.mlflow_log_param(k,v)
     return trainer,min(scores)
 
+
+def train_on_gcloud(uri=MLFLOW_URI):
+    src = f"gs://{BUCKET_NAME}/{BUCKET_TRAIN_DATA_PATH}"
+    df = get_data(src=src)
+    df = clean_data(df)
+    X,y = get_X_y(df,TARGET,[TARGET])
+    X_train,X_test,y_train,y_test = train_test_split(X,y,test_size=0.2)
+    estimator = XGBRFRegressor()
+    params = {}
+    trainer = Trainer(X_train,y_train,estimator,params,experiment_name="[FR] [Lyon] [mcaox] TaxiFareModel with dist_to_center gcloud")
+    trainer.mlflow_uri = uri
+    trainer.run()
+    score = trainer.evaluate(X_test,y_test)
+    trainer.mlflow_log_metric("rmse",score)
+    trainer.mlflow_log_param("model",trainer.pipeline[-1].__class__.__name__)
+    for k,v in params.items():
+        trainer.mlflow_log_param(k,v)
+    trainer.save_model(f'model{estimator.__class__.__name__}.joblib')
+    trainer.upload_model_to_gcp()
+    return trainer,score
+
+
+
+
 if __name__ == "__main__":
-    src = Path(__file__).parents[1] / "raw_data" / "train.csv"
-    trainer,score = main(src=src,uri="")
+    if len(sys.argv)>1 and sys.argv[1]=="gcloud":
+        trainer,score = train_on_gcloud(uri=MLFLOW_URI)
+    else:
+        src = Path(__file__).parents[1] / "raw_data" / "train.csv"
+        trainer,score = train_locally(src=src, uri="")
     print(score)
