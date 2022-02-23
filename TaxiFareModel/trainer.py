@@ -1,5 +1,6 @@
 # imports
 import sys
+from argparse import ArgumentParser
 from pathlib import Path
 
 import joblib
@@ -18,10 +19,10 @@ from xgboost import XGBRFRegressor
 
 from google.cloud import storage
 
+from TaxiFareModel import config
 from TaxiFareModel.data import get_data, clean_data, get_X_y
 from TaxiFareModel.encoders import TimeFeaturesEncoder, DistanceTransformer, DistanceToCenterTransformer
 from TaxiFareModel.utils import compute_rmse
-from config import MLFLOW_URI, BUCKET_NAME, BUCKET_TRAIN_DATA_PATH, STORAGE_LOCATION
 
 
 class Trainer():
@@ -119,21 +120,24 @@ class Trainer():
         self.mlflow_client.log_metric(self.mlflow_run.info.run_id, key, value)
 
     def upload_model_to_gcp(self,name='model.joblib'):
+        print("salut")
         client = storage.Client()
 
-        bucket = client.bucket(BUCKET_NAME)
+        bucket = client.bucket(config.get('BUCKET_NAME'))
 
-        blob = bucket.blob(STORAGE_LOCATION)
+        blob = bucket.blob(config.get('STORAGE_LOCATION') + name)
 
         blob.upload_from_filename(name)
 
 
 TARGET = "fare_amount"
-def train_locally(src = None, uri=MLFLOW_URI):
+def train_locally(src = None, uri=None):
     if src is None or not Path(src).exists():
         df = get_data()
     else:
         df = get_data(src=src)
+    if uri is None:
+        uri = config.get('MLFLOW_URI')
     df = clean_data(df)
     X,y = get_X_y(df,TARGET,[TARGET])
     X_train,X_test,y_train,y_test = train_test_split(X,y,test_size=0.2)
@@ -156,8 +160,10 @@ def train_locally(src = None, uri=MLFLOW_URI):
     return trainer,min(scores)
 
 
-def train_on_gcloud(uri=MLFLOW_URI):
-    src = f"gs://{BUCKET_NAME}/{BUCKET_TRAIN_DATA_PATH}"
+def train_on_gcloud(uri=None):
+    if uri is None:
+        uri = config.get('MLFLOW_URI')
+    src = f"gs://{config.get('BUCKET_NAME')}/{config.get('BUCKET_TRAIN_DATA_PATH')}"
     df = get_data(src=src)
     df = clean_data(df)
     X,y = get_X_y(df,TARGET,[TARGET])
@@ -176,13 +182,18 @@ def train_on_gcloud(uri=MLFLOW_URI):
     trainer.upload_model_to_gcp()
     return trainer,score
 
-
-
-
 if __name__ == "__main__":
-    if len(sys.argv)>1 and sys.argv[1]=="gcloud":
-        trainer,score = train_on_gcloud(uri=MLFLOW_URI)
+    print(sys.argv)
+    parser = ArgumentParser()
+    parser.add_argument("--type",default="local")
+    parser.add_argument("--config_path",default=str(Path(__file__).parents[1] / "common.env"))
+    args = parser.parse_args(sys.argv[1:])
+    config.set_path(args.config_path)
+    print(args,"jvklfdbkjfdklbjlk")
+    if args.type=="gcloud":
+        trainer,score = train_on_gcloud()
     else:
         src = Path(__file__).parents[1] / "raw_data" / "train.csv"
+
         trainer,score = train_locally(src=src, uri="")
     print(score)
