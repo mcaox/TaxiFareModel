@@ -19,7 +19,7 @@ from xgboost import XGBRFRegressor
 
 from google.cloud import storage
 
-from TaxiFareModel import config
+from TaxiFareModel.config import BUCKET_NAME, STORAGE_LOCATION, MLFLOW_URI, BUCKET_TRAIN_DATA_PATH
 from TaxiFareModel.data import get_data, clean_data, get_X_y
 from TaxiFareModel.encoders import TimeFeaturesEncoder, DistanceTransformer, DistanceToCenterTransformer
 from TaxiFareModel.utils import compute_rmse
@@ -123,9 +123,9 @@ class Trainer():
         print("salut")
         client = storage.Client()
 
-        bucket = client.bucket(config.get('BUCKET_NAME'))
+        bucket = client.bucket(BUCKET_NAME)
 
-        blob = bucket.blob(config.get('STORAGE_LOCATION') + name)
+        blob = bucket.blob(STORAGE_LOCATION + name)
 
         blob.upload_from_filename(name)
 
@@ -137,7 +137,7 @@ def train_locally(src = None, uri=None):
     else:
         df = get_data(src=src)
     if uri is None:
-        uri = config.get('MLFLOW_URI')
+        uri = MLFLOW_URI
     df = clean_data(df)
     X,y = get_X_y(df,TARGET,[TARGET])
     X_train,X_test,y_train,y_test = train_test_split(X,y,test_size=0.2)
@@ -149,7 +149,7 @@ def train_locally(src = None, uri=None):
         trainer = Trainer(X_train,y_train,estimator,params,experiment_name="[FR] [Lyon] [mcaox] TaxiFareModel with dist_to_center")
         trainer.mlflow_uri = uri
         trainer.run()
-        trainer.save_model()
+        trainer.save_model(f'model{estimator.__class__.__name__}.joblib')
         cv = cross_validate(trainer.pipeline,X_train,y_train,cv=5,scoring=make_scorer(compute_rmse, greater_is_better=False))
         score = cv.get("test_score").mean()
         scores.append(score)
@@ -162,8 +162,8 @@ def train_locally(src = None, uri=None):
 
 def train_on_gcloud(uri=None):
     if uri is None:
-        uri = config.get('MLFLOW_URI')
-    src = f"gs://{config.get('BUCKET_NAME')}/{config.get('BUCKET_TRAIN_DATA_PATH')}"
+        uri = MLFLOW_URI
+    src = f"gs://{BUCKET_NAME}/{BUCKET_TRAIN_DATA_PATH}"
     df = get_data(src=src)
     df = clean_data(df)
     X,y = get_X_y(df,TARGET,[TARGET])
@@ -178,22 +178,14 @@ def train_on_gcloud(uri=None):
     trainer.mlflow_log_param("model",trainer.pipeline[-1].__class__.__name__)
     for k,v in params.items():
         trainer.mlflow_log_param(k,v)
-    trainer.save_model(f'model{estimator.__class__.__name__}.joblib')
-    trainer.upload_model_to_gcp()
+    name = trainer.save_model(f'model{estimator.__class__.__name__}.joblib')
+    trainer.upload_model_to_gcp(name)
     return trainer,score
 
 if __name__ == "__main__":
-    print(sys.argv)
-    parser = ArgumentParser()
-    parser.add_argument("--type",default="local")
-    parser.add_argument("--config_path",default=str(Path(__file__).parents[1] / "common.env"))
-    args = parser.parse_args(sys.argv[1:])
-    config.set_path(args.config_path)
-    print(args,"jvklfdbkjfdklbjlk")
-    if args.type=="gcloud":
+    if len(sys.argv)>1 and sys.argv[1] =="gcloud":
         trainer,score = train_on_gcloud()
     else:
         src = Path(__file__).parents[1] / "raw_data" / "train.csv"
-
         trainer,score = train_locally(src=src, uri="")
     print(score)

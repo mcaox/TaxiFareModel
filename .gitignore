@@ -8,3 +8,5 @@ raw_data/
 .env
 /mlruns/.trash/*
 /mlruns/*
+/*.env
+*.joblib
