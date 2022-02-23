@@ -50,5 +50,5 @@ def generate_submission_csv(path="raw_data", kaggle_upload=False):
 
 
 if __name__ == '__main__':
-    generate_submission_csv(path="raw_data",kaggle_upload=True)
+    generate_submission_csv(path="raw_data",kaggle_upload=False)
 
