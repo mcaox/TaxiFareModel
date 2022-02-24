@@ -66,10 +66,9 @@ def generate_submission_csv(path_test_data="raw_data",
 
 if __name__ == '__main__':
     path_test_data = Path("raw_data") / "test.csv"
-    path_model = download_model(model_name="model.joblib",
+    path_model = download_model(model_name="modelXGBRFRegressor.joblib",
                           bucket=BUCKET_NAME)
     generate_submission_csv(path_test_data=path_test_data,
                             path_trained_model=path_model,
                             kaggle_upload=False)
     path_model.unlink(missing_ok=True)
-

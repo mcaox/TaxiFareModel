@@ -1,23 +1,26 @@
 # imports
 import sys
 from argparse import ArgumentParser
+import time
 from pathlib import Path
 
 import joblib
 import mlflow
+import numpy as np
 from memoized_property import memoized_property
 from mlflow.tracking import MlflowClient
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import Lasso, Ridge
 from sklearn.metrics import make_scorer
-from sklearn.model_selection import train_test_split, cross_validate
+from sklearn.model_selection import train_test_split, cross_validate, RandomizedSearchCV
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
-from xgboost import XGBRFRegressor
+# from xgboost import XGBRFRegressor
 
 
 from google.cloud import storage
+from xgboost import XGBRFRegressor
 
 from TaxiFareModel.config import BUCKET_NAME, STORAGE_LOCATION, MLFLOW_URI, BUCKET_TRAIN_DATA_PATH
 from TaxiFareModel.data import get_data, clean_data, get_X_y
@@ -26,8 +29,24 @@ from TaxiFareModel.encoders import TimeFeaturesEncoder, DistanceTransformer, Dis
 from TaxiFareModel.utils import compute_rmse
 
 
+DEFAULT_PARAMS = dict(nrows=10000,
+              upload=True,
+              local=False,  # set to False to get data from GCP (Storage or BigQuery)
+              gridsearch=False,
+              optimize=True,
+              mlflow=True,  # set to True to log params to mlflow
+              pipeline_memory=None, # None if no caching and True if caching expected
+              distance_type="manhattan",
+              feateng=["distance_to_center", "direction", "distance", "time_features", "geohash"],
+              n_jobs=-1,
+              n_iter=10) # Try with njobs=1 and njobs = -1
+
 class Trainer():
-    def __init__(self, X, y,estimator=Lasso(),params={},experiment_name = "[FR] [Lyon] [mcaox] TaxiFareModel"):
+    def __init__(self, X, y,
+                 estimator=Lasso(),
+                 params={},
+                 experiment_name = "[FR] [Lyon] [mcaox] TaxiFareModel",
+                 **kwargs):
         """
             X: pandas DataFrame
             y: pandas Series
@@ -35,6 +54,8 @@ class Trainer():
         self.pipeline = None
         self.estimator = estimator
         self.params = params
+        self.kwargs = dict(DEFAULT_PARAMS)
+        self.kwargs.update(kwargs)
         self.X = X
         self.y = y
         self._mlflow_uri = None
@@ -74,11 +95,33 @@ class Trainer():
             ('model', self.estimator)
         ])
 
+
+    def add_grid_search(self):
+        """"
+        Apply Gridsearch on self.params defined in get_estimator
+        {'rgs__n_estimators': [int(x) for x in np.linspace(start = 200, stop = 2000, num = 10)],
+          'rgs__max_features' : ['auto', 'sqrt'],
+          'rgs__max_depth' : [int(x) for x in np.linspace(10, 110, num = 11)]}
+        """
+        # Here to apply ramdom search to pipeline, need to follow naming "rgs__paramname"
+        self.pipeline = RandomizedSearchCV(estimator=self.pipeline, param_distributions=self.params,
+                                           n_iter=self.kwargs.get("n_iter"),
+                                           cv=2,
+                                           verbose=1,
+                                           random_state=42,
+                                           n_jobs=self.kwargs.get("n_jobs"))
+        #pre_dispatch=None)
+
     def run(self):
         """set and train the pipeline"""
+        tic = time.time()
         self.set_pipeline()
-        self.pipeline.set_params(**self.params)
+        if self.kwargs.get("gridsearch"):
+            self.add_grid_search()
+        else:
+            self.pipeline.set_params(**self.params)
         self.pipeline.fit(self.X, self.y)
+        self.mlflow_log_metric("train_time", int(time.time() - tic))
 
     def evaluate(self, X_test, y_test):
         """evaluates the pipeline on df_test and return the RMSE"""
@@ -122,7 +165,6 @@ class Trainer():
         self.mlflow_client.log_metric(self.mlflow_run.info.run_id, key, value)
 
     def upload_model_to_gcp(self,name='model.joblib'):
-        print("salut")
         client = storage.Client()
 
         bucket = client.bucket(BUCKET_NAME)
@@ -133,36 +175,41 @@ class Trainer():
 
 
 TARGET = "fare_amount"
-def train_locally(src = None, uri=None):
+def train_locally(estimator,params={},src = None, uri=None,kwargs_trainer={}):
     if src is None or not Path(src).exists():
         df = get_data()
     else:
         df = get_data(src=src)
+
     if uri is None:
         uri = MLFLOW_URI
+
     df = clean_data(df)
     X,y = get_X_y(df,TARGET,[TARGET])
     X_train,X_test,y_train,y_test = train_test_split(X,y,test_size=0.2)
+
     scores = []
-    for estimator,params in [
-        (XGBRFRegressor(),{}),
-        ]:
-        print(estimator.__class__.__name__,params)
-        trainer = Trainer(X_train,y_train,estimator,params,experiment_name="[FR] [Lyon] [mcaox] TaxiFareModel with dist_to_center")
-        trainer.mlflow_uri = uri
-        trainer.run()
-        trainer.save_model(f'model{estimator.__class__.__name__}.joblib')
-        cv = cross_validate(trainer.pipeline,X_train,y_train,cv=5,scoring=make_scorer(compute_rmse, greater_is_better=False))
-        score = cv.get("test_score").mean()
-        scores.append(score)
-        trainer.mlflow_log_metric("rmse",score)
+    trainer = Trainer(X_train,y_train,estimator,params,
+                      experiment_name="[FR] [Lyon] [mcaox] TaxiFareModel with dist_to_center",
+                      **kwargs_trainer)
+    trainer.mlflow_uri = uri
+    trainer.run()
+    trainer.save_model(f'model{estimator.__class__.__name__}.joblib')
+
+    cv = cross_validate(trainer.pipeline,X_train,y_train,cv=5,scoring=make_scorer(compute_rmse, greater_is_better=False))
+    score = cv.get("test_score").mean()
+    scores.append(score)
+    trainer.mlflow_log_metric("rmse",score)
+    if not kwargs_trainer.get("gridsearch",False):
         trainer.mlflow_log_param("model",trainer.pipeline[-1].__class__.__name__)
-        for k,v in params.items():
-            trainer.mlflow_log_param(k,v)
+    else:
+        trainer.mlflow_log_param("model",f"gridsearch{estimator.__class__.__name__}")
+    for k,v in params.items():
+        trainer.mlflow_log_param(k,v)
     return trainer,min(scores)
 
 
-def train_on_gcloud(uri=None):
+def train_on_gcloud(estimator,params={},uri=None,kwargs_trainer={}):
     if uri is None:
         uri = MLFLOW_URI
     src = f"gs://{BUCKET_NAME}/{BUCKET_TRAIN_DATA_PATH}"
@@ -170,14 +217,17 @@ def train_on_gcloud(uri=None):
     df = clean_data(df)
     X,y = get_X_y(df,TARGET,[TARGET])
     X_train,X_test,y_train,y_test = train_test_split(X,y,test_size=0.2)
-    estimator = XGBRFRegressor()
-    params = {}
-    trainer = Trainer(X_train,y_train,estimator,params,experiment_name="[FR] [Lyon] [mcaox] TaxiFareModel with dist_to_center gcloud")
+    trainer = Trainer(X_train,y_train,estimator,params,
+                      experiment_name="[FR] [Lyon] [mcaox] TaxiFareModel with dist_to_center gcloud",
+                      **kwargs_trainer)
     trainer.mlflow_uri = uri
     trainer.run()
     score = trainer.evaluate(X_test,y_test)
     trainer.mlflow_log_metric("rmse",score)
-    trainer.mlflow_log_param("model",trainer.pipeline[-1].__class__.__name__)
+    if not kwargs_trainer.get("gridsearch",False):
+        trainer.mlflow_log_param("model",trainer.pipeline[-1].__class__.__name__)
+    else:
+        trainer.mlflow_log_param("model",f"gridsearch{estimator.__class__.__name__}")
     for k,v in params.items():
         trainer.mlflow_log_param(k,v)
     name = trainer.save_model(f'model{estimator.__class__.__name__}.joblib')
@@ -185,9 +235,20 @@ def train_on_gcloud(uri=None):
     return trainer,score
 
 if __name__ == "__main__":
+    estimator = XGBRFRegressor()
+    # params = {"model__alpha":np.linspace(1,100,100)}
+    # params = {"model__learning_rate":np.linspace(0.1,3,30),
+    #           "model__n_estimators":[10,20,50,100,200]}
+    # kwargs_trainer = {"gridsearch":True,
+    #                   "n_iter":5,
+    #                   "n_jobs":7}
+    params = {"model__learning_rate":1.0,
+              "model__n_estimators":200}
+    params ={}
+    kwargs_trainer = {"gridsearch":False}
     if len(sys.argv)>1 and sys.argv[1] =="gcloud":
-        trainer,score = train_on_gcloud()
+        trainer,score = train_on_gcloud(estimator,params=params,kwargs_trainer=kwargs_trainer)
     else:
         src = Path(__file__).parents[1] / "raw_data" / "train.csv"
-        trainer,score = train_locally(src=src, uri="")
+        trainer,score = train_locally(estimator,params=params,src=src, uri="",kwargs_trainer=kwargs_trainer)
     print(score)
